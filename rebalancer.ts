@@ -252,7 +252,6 @@ async function getAllAprs() {
             else return console.error("Failed to get APRs for unrecognized pool:", poolName);
         } catch (error) {
             console.error("Failed to get APR for", poolName, "pool:", error);
-            return;
         }
         
         console.log(poolName, " APR: ", apr);
@@ -349,6 +348,7 @@ async function tryBalanceSupply() {
     }
 
     if (bestPoolName == getCurrentPoolName() && (await getFundControllerImmediateBalance()).eq(web3.utils.toBN(0))) {
+        console.log("No new funds to rebalance.");
     	db.isBalancingSupply = false;
     	return;
     }
@@ -364,14 +364,17 @@ async function tryBalanceSupply() {
     const totalPoolBalance = await fundManagerContract.methods.getRawFundBalance().call();
 
     var maxEthereumMinerFees = parseInt(maxEthereumMinerFeesBN.toString()); // TODO: BN.prototype.toNumber replacement
+    
     var maxMinerFees = maxEthereumMinerFees / Math.pow(10, 18)
         
-    var expectedAdditionalYearlyInterest = totalPoolBalance * (bestApr - getCurrentApr());
+    var expectedAdditionalYearlyInterest = (bestPoolName != getCurrentPoolName()) ? totalPoolBalance * (bestApr - getCurrentApr()) : totalPoolBalance * bestApr;
     
-    var expectedAdditionalYearlyInterest = expectedAdditionalYearlyInterest / Math.pow(10, 18);
+    expectedAdditionalYearlyInterest = expectedAdditionalYearlyInterest / Math.pow(10, 18);
+
     // Get seconds since last supply balancing (if we don't know the last time, assume it's been one week)
     // TODO: Get lastTimeBalanced from a database instead of storing in a variable
     var epoch = (new Date()).getTime() / 1000;
+
     var secondsSinceLastSupplyBalancing = db.currencies["ETH"].lastTimeBalanced > 0 ? epoch - db.currencies["ETH"].lastTimeBalanced : 86400 * 7;
 
     // Check AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD
@@ -814,7 +817,7 @@ async function checkPoolBalances() {
                 try {
                     db.pools[poolName].currencies["ETH"].poolBalanceBN = await compoundProtocol.getUnderlyingBalance();
                 } catch (error) {
-                    return console.error("Failed to get ETH balance on Compound:", error);
+                    console.error("Failed to get ETH balance on Compound:", error);
                 }
             } else if (poolName === "KeeperDAO") {
             	db.pools[poolName].currencies["ETH"].poolBalanceBN = await keeperDaoProtocol.getUnderlyingBalance();

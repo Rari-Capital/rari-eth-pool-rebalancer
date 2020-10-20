@@ -251,7 +251,6 @@ function getAllAprs() {
             }
             catch (error) {
                 console.error("Failed to get APR for", poolName, "pool:", error);
-                return;
             }
             console.log(poolName, " APR: ", apr);
             db.pools[poolName].currencies["ETH"].supplyApr = apr;
@@ -344,8 +343,8 @@ function tryBalanceSupply() {
         const totalPoolBalance = yield fundManagerContract.methods.getRawFundBalance().call();
         var maxEthereumMinerFees = parseInt(maxEthereumMinerFeesBN.toString()); // TODO: BN.prototype.toNumber replacement
         var maxMinerFees = maxEthereumMinerFees / Math.pow(10, 18);
-        var expectedAdditionalYearlyInterest = totalPoolBalance * (bestApr - getCurrentApr());
-        var expectedAdditionalYearlyInterest = expectedAdditionalYearlyInterest / Math.pow(10, 18);
+        var expectedAdditionalYearlyInterest = (bestPoolName != getCurrentPoolName()) ? totalPoolBalance * (bestApr - getCurrentApr()) : totalPoolBalance * bestApr;
+        expectedAdditionalYearlyInterest = expectedAdditionalYearlyInterest / Math.pow(10, 18);
         // Get seconds since last supply balancing (if we don't know the last time, assume it's been one week)
         // TODO: Get lastTimeBalanced from a database instead of storing in a variable
         var epoch = (new Date()).getTime() / 1000;
@@ -759,7 +758,7 @@ function checkPoolBalances() {
                         db.pools[poolName].currencies["ETH"].poolBalanceBN = yield compoundProtocol.getUnderlyingBalance();
                     }
                     catch (error) {
-                        return console.error("Failed to get ETH balance on Compound:", error);
+                        console.error("Failed to get ETH balance on Compound:", error);
                     }
                 }
                 else if (poolName === "KeeperDAO") {

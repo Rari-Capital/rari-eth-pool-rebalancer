@@ -32,10 +32,6 @@ class KeeperDaoProtocol {
     getApr() {
         return __awaiter(this, void 0, void 0, function* () {
             const exchangeRateNow = yield this.getExchangeRate();
-            console.log("exchangeRateNow: ", exchangeRateNow);
-            console.log("lastSavedExchangeRate: ", this.lastSavedExchangeRate);
-            console.log("now: ", (new Date()).getTime() / 1000);
-            console.log("lastSavedTimestamp: ", this.lastSavedTimestamp);
             return this.calculateApy(this.lastSavedTimestamp, this.lastSavedExchangeRate, (new Date()).getTime() / 1000, exchangeRateNow);
         });
     }
