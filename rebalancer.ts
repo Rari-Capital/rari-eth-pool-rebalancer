@@ -99,6 +99,9 @@ async function doCycle() {
 
 
 async function onLoad() {
+    // Start updating ETH/USD rate regularly
+    await updateEthUsdRates();
+    setInterval(function() { updateEthUsdRates(); }, (process.env.UPDATE_CURRENCY_USD_RATES_INTERVAL_SECONDS ? parseFloat(process.env.UPDATE_CURRENCY_USD_RATES_INTERVAL_SECONDS) : 60) * 1000);
     // Start claiming interest fees regularly
     if (parseInt(process.env.CLAIM_INTEREST_FEES_REGULARLY)) {
         await tryDepositInterestFees();
@@ -289,6 +292,30 @@ async function setMaxCompAllowanceTo0x(unset = false) {
     console.log((unset ? "Zero" : "Max") + " token allowance set successfully for COMP on 0x:", txid);
 }
 
+/* CURRENCY USD RATE UPDATING */
+
+async function updateEthUsdRates() {
+    var currencyCodesByCoinGeckoIds = {};
+    for (const currencyCode of Object.keys(db.currencies)) currencyCodesByCoinGeckoIds[db.currencies[currencyCode].coinGeckoId] = currencyCode;
+    
+    https.get('https://api.coingecko.com/api/v3/simple/price?vs_currencies=usd&ids=ethereum', (resp) => {
+        let data = '';
+
+        // A chunk of data has been recieved
+        resp.on('data', (chunk) => {
+            data += chunk;
+        });
+
+        // The whole response has been received
+        resp.on('end', () => {
+            var decoded = JSON.parse(data);
+            if (!decoded) return console.error("Failed to decode USD exchange rates from CoinGecko");
+            db.currencies["ETH"].usdRate = decoded["ethereum"].usd;
+        });
+    }).on("error", (err) => {
+        console.error("Error requesting currency rates from CoinGecko:", err.message);
+    });
+}
 
 /* BALANCER FUNCTION */
 
@@ -361,30 +388,29 @@ async function tryBalanceSupply() {
         return;
     }
 
-    const totalPoolBalance = await fundManagerContract.methods.getRawFundBalance().call();
-
+    const totalPoolBalanceBN = (await getFundControllerImmediateBalance()).add(db.pools[getCurrentPoolName()].currencies["ETH"].poolBalanceBN);
+    const totalPoolBalance = parseInt(totalPoolBalanceBN.toString())
     var maxEthereumMinerFees = parseInt(maxEthereumMinerFeesBN.toString()); // TODO: BN.prototype.toNumber replacement
     
     var maxMinerFees = maxEthereumMinerFees / Math.pow(10, 18)
-        
-    var expectedAdditionalYearlyInterest = (bestPoolName != getCurrentPoolName()) ? totalPoolBalance * (bestApr - getCurrentApr()) : totalPoolBalance * bestApr;
-    
-    expectedAdditionalYearlyInterest = expectedAdditionalYearlyInterest / Math.pow(10, 18);
+    var expectedAdditionalYearlyInterest = (bestPoolName != getCurrentPoolName()) ? totalPoolBalance * (bestApr - getCurrentApr()) : parseInt((await getFundControllerImmediateBalance()).toString()) * bestApr;
 
+    expectedAdditionalYearlyInterest = expectedAdditionalYearlyInterest / Math.pow(10, 18);
+    var expectedAdditionalYearlyInterestUsd = expectedAdditionalYearlyInterest * db.currencies["ETH"].usdRate;
+    
     // Get seconds since last supply balancing (if we don't know the last time, assume it's been one week)
-    // TODO: Get lastTimeBalanced from a database instead of storing in a variable
     var epoch = (new Date()).getTime() / 1000;
 
     var secondsSinceLastSupplyBalancing = db.currencies["ETH"].lastTimeBalanced > 0 ? epoch - db.currencies["ETH"].lastTimeBalanced : 86400 * 7;
 
     // Check AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD
-    if (expectedAdditionalYearlyInterest * (secondsSinceLastSupplyBalancing / 86400 / 365) / maxMinerFees < parseFloat(process.env.AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD)) {
+    if (expectedAdditionalYearlyInterestUsd * (secondsSinceLastSupplyBalancing / 86400 / 365) / maxMinerFees < parseFloat(process.env.AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD)) {
         db.isBalancingSupply = false;
-        console.log("Not balancing supply of ETH because", expectedAdditionalYearlyInterest, "*", (secondsSinceLastSupplyBalancing / 86400 / 365), "/", maxMinerFees, "is less than", process.env.AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD);
+        console.log("Not balancing supply of ETH because", expectedAdditionalYearlyInterestUsd, "*", (secondsSinceLastSupplyBalancing / 86400 / 365), "/", maxMinerFees, "is less than", process.env.AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD);
         return;
     }
 
-    console.log("Balancing supply of ETH because", expectedAdditionalYearlyInterest, "*", (secondsSinceLastSupplyBalancing / 86400 / 365), "/", maxMinerFees, "is at least", process.env.AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD);
+    console.log("Balancing supply of ETH because", expectedAdditionalYearlyInterestUsd, "*", (secondsSinceLastSupplyBalancing / 86400 / 365), "/", maxMinerFees, "is at least", process.env.AUTOMATIC_SUPPLY_BALANCING_MIN_ADDITIONAL_YEARLY_INTEREST_USD_TIMES_YEARS_SINCE_LAST_REBALANCING_PER_GAS_USD);
 
     // Balance supply!
     try {
@@ -408,22 +434,10 @@ async function getMaxEthereumMinerFeesForSupplyBalancing(currentPoolName, bestPo
         throw "Failed to check ETH gas price to calculate max Ethereum miner fees before balancing supply: " + error;
     }
     
-    var gasNecessary = 250000;
+    var gasNecessary = 0;
 
-    /*
-    for (var i = 0; i < poolBalances.length; i++) {
-        if (poolBalances[i].balanceDifferenceBN.gt(web3.utils.toBN(0))) {
-            if (poolBalances[i].poolName === "dYdX") gasNecessary += 300000; // TODO: Correct dYdX gas prices
-            else if (poolBalances[i].poolName === "Compound") gasNecessary += currencyCode === "DAI" ? 300000 : 150000;
-
-            else gasNecessary += 300000; // TODO: Correct default gas price assumption
-        } else if (poolBalances[i].balanceDifferenceBN.isNeg()) {
-            if (poolBalances[i].poolName === "dYdX") gasNecessary += 300000; // TODO: Correct dYdX gas prices
-            else if (poolBalances[i].poolName === "Compound") gasNecessary += 90000;
-            else gasNecessary += 300000; // TODO: Correct default gas price assumption
-        }
-    }
-	*/
+    if (currentPoolName == bestPoolName) gasNecessary = 250000;
+    else gasNecessary = 500000;
 
     return web3.utils.toBN(gasNecessary).mul(web3.utils.toBN(gasPrice));
 }
